@@ -1,0 +1,42 @@
+---
+title: "Clustering project"
+author: "Rafał Rysiejko, Rezart Abbazi"
+date: "11/10/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T)
+```
+
+## R Markdown
+inscription of a project. 
+
+Installing and running the libraries:
+```{r echo=T,results='hide',message=FALSE}
+requiredPackages = c("tidyverse","factoextra","stats","clustertend","flexclust",
+                     "fpc","cluster","ClusterR","knitr","kableExtra") 
+for(i in requiredPackages){if(!require(i,character.only = TRUE)) install.packages(i)} 
+for(i in requiredPackages){library(i,character.only = TRUE)} 
+```
+
+Loading the data:
+```{r}
+data_full <- read.csv("/Users/rafalelpassion/Unsupervised-Learning2019Z/Dataset/CC GENERAL.csv")
+```
+
+```{r}
+library(knitr)
+kable(summary(data_full),caption = "Summary statistics of the dataset")%>% 
+  kable_styling(latex_options="scale_down")
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
