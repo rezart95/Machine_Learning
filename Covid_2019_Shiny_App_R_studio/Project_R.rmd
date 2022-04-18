@@ -1,0 +1,379 @@
+---
+title: "Visualization of COVID-19"
+author: "Shamkhal Hajiyev & Rezart Abazi"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+# Authors
+
+* Shamkhal Hajiyev - 425991
+* Rezart Abazi - 425977
+
+# Introduction
+
+At the latest since the Coronavirus COVID-19 is a pandemic, half of the world is paying attention to the case statistics. As Data Scient students, We decided to create a shiny app which will visualize the data set in various types. In app, we added 4 main tabs, Graphs, Compare the datas of Countries, Data Review, and About Project.
+
+In graph part, we have 2 sub-taps, in first you can see the barplot of data according to daily basis, in second tab cumulated basis of data is visualized, the user selects the 3 types of input, Country/Region, State/Provience, Selected Metrics which shows the number of Death, Confirmed, and Recovered Cases. According to all these inputs user can see 2 barplot as mentioned before. 
+
+In Compare the datas of Countries part, user fills 5 inputs, Selected Countries, Select Plot, Data Set, Data Type, Select a Date. In selected countries user adds which counties he/she wants to compare. In select plot, we have 4 choices, Bar, Line, Pie and Stacked Area. Date Set shows the user wants to compare according Death, Confirmed or Recovered and Data Type has Daily or Cumulated basis of datas. Select a Date gives a chance to user to compare specific dates.
+
+In last two tabs are simple, so in Data Review shows to user, the data what we have based on last day cumulated cases, We have two download buttons which lets to user to download last day cumulated data or total date with the daily dates. About the project tab shows information about project and it includes Markdown file from the project folder.
+
+# Packages Required
+
+```{r message=FALSE, warning=FALSE}
+library(shiny)
+library(shinythemes)
+library(shinydashboard)
+library(leaflet)
+library(RColorBrewer)
+library(plotly)
+library(DT)
+library(ggplot2)
+```
+
+# Data & Data Preparation
+
+The data is taken from the folder which contains daily time series summary tables, including confirmed, deaths and recovered. All data is read in from the daily case report. The time series tables are subject to be updated if inaccuracies are identified in our historical data. The daily reports will not be adjusted in these instances to maintain a record of raw data.
+
+Two time series tables are for the US confirmed cases and deaths, reported at the county level. They are named time_series_covid19_confirmed_US.csv, time_series_covid19_deaths_US.csv, respectively.
+
+Three time series tables are for the global confirmed cases, recovered cases and deaths. Australia, Canada and China are reported at the province/state level. Dependencies of the Netherlands, the UK, France and Denmark are listed under the province/state level. The US and other countries are at the country level. The tables are renamed time_series_covid19_confirmed_global.csv and time_series_covid19_deaths_global.csv, and time_series_covid19_recovered_global.csv, respectively.
+
+We defined data_url from which we download the case data of the Coronavirus by country and region. The information related to data is given above so we think no need for repeation. Further, defined a font (f1) to be used later, plus a short-hand function to measure how old a file is (to avoid too many reloadings):
+
+```{r}
+data_url = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series"
+
+f1 = list(family = "Courier New, monospace",
+          size = 12,
+          color = "rgb(0,0,0)")
+
+last_update = function(fileName) {
+  (as.numeric(as.POSIXlt(Sys.time())) - as.numeric(file.info(fileName)$ctime)) / 60
+}
+```
+
+Now, we defined the function to load a dataset.
+
+The function first checks if the data is already available, and not older than 5 minutes. If this is not the case, read.csv downloads the file from the web. Geo-coordinates are omitted, then pivot_longer (from package tidyr) converts the data.frame from the wide to the long format. The method mutate parses the dates and inserts the text <all> if no region is available (true for countries other than US, Canada, China and Australia). 
+The code block loads Confirmed Cases, Recovered Cases and Deaths, and joins these 3 data sets to get one big data set which names as allD.
+
+```{r}
+loadD = function(fileName, columnName) {
+  if (!file.exists(fileName) || last_update(fileName) > 5) {
+    data = read.csv(
+      file.path(data_url, fileName),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    ) %>%
+      select(-Lat, -Long) %>%
+      pivot_longer(-(1:2), names_to = "date", values_to = columnName) %>%
+      mutate(
+        date = as.Date(date, format = "%m/%d/%y"),
+        `Country/Region` = if_else(`Country/Region` == "", "?", `Country/Region`),
+        `Province/State` = if_else(`Province/State` == "", "<all>", `Province/State`)
+      )
+    save(data, file = fileName)
+  } else {
+    load(file = fileName)
+  }
+  return(data)
+}
+
+
+allD =
+  loadD("time_series_covid19_confirmed_global.csv", "CumConfirmed") %>%
+  inner_join(loadD("time_series_covid19_deaths_global.csv", "CumDeaths")) %>%
+  inner_join(loadD("time_series_covid19_recovered_global.csv", "CumRecovered"))
+```
+# Functions 
+
+First we added a reactive function that returns a subset of the overall data, i.e. only a specified country and region. Whenever the user changes the selection, the function is called and the filters update.
+
+Additionally, the function aggregates the data (using summarise_if) if the user chooses <all> for a country having states (e.g. US). Further, from cumulated statistics, the differences are calculated and saved into new columns, prefixed with “New”
+```{r}
+  data = reactive({
+    d = allD %>%
+      filter(`Country/Region` == input$country)
+    if (input$state != "<all>") {
+      d = d %>%
+        filter(`Province/State` == input$state)
+    } else {
+      d = d %>%
+        group_by(date) %>%
+        summarise_if(is.numeric, sum, na.rm = TRUE)
+    }
+    
+    d %>%
+      mutate(
+        dateStr = format(date, format = "%b %d, %Y"),
+        NewConfirmed = CumConfirmed - lag(CumConfirmed, default =
+                                            0),
+        NewRecovered = CumRecovered - lag(CumRecovered, default =
+                                            0),
+        NewDeaths = CumDeaths - lag(CumDeaths, default = 0)
+      )
+  })
+```
+
+
+Next the server observes for changes in the country selection. If that happens, the server must update the selectable States. Also, <all> is added as an option in the State dropdown menu.
+The next two lines are not reactive. Instead, they are called at app start. The first line extracts all countries by lexicographical order. The other line selects Poland on the drop-down menu (selectizeInput): 
+
+```{r}
+  observeEvent(input$country, {
+    states = allData %>%
+      filter(`Country/Region` == input$country) %>% 
+      pull(`Province/State`)
+    states = c("<all>", sort(unique(states)))
+    updateSelectInput(session, "state", choices=states, 
+      selected=states[1])
+  })
+ countries = sort(unique(allData$`Country/Region`))
+ updateSelectInput(session, "country", choices=countries, 
+    selected="Poland")
+```
+
+In order to compare the data of countries we created many functions are similar to main graph, therefore we decided to add here the functions are new. In below, you will see function related to input date, it shows us if the user select the pie, he/she will be able to select only 1 date, but for the other graphs user can select start and end day of comparison. 
+
+```{r}
+  output$selectDate <- renderUI({
+    allD$date1 = format(as.Date(allD$date), format = "%Y-%m-%d")
+    if (input$Plottype != "Pie")
+    {
+      dateRangeInput(
+        'selectDate',
+        label = 'Select a Date Range',
+        start = min(allD$date1),
+        end = max(allD$date1)
+      )
+    }
+    else{
+      dateInput('selectDate',
+                label = 'Select a Date',
+                value =  max(allD$date1))
+    }
+    
+  })
+```
+The function below create plots based on the inputs of the user.
+
+```{r}
+output$selectDate <- renderUI({
+    allD$date1 = format(as.Date(allD$date), format = "%Y-%m-%d")
+    if (input$Plottype != "Pie")
+    {
+      dateRangeInput(
+        'selectDate',
+        label = 'Select a Date Range',
+        start = min(allD$date1),
+        end = max(allD$date1)
+      )
+    }
+    else{
+      dateInput('selectDate',
+                label = 'Select a Date',
+                value =  max(allD$date1))
+    }
+    
+  })
+  
+  data1 = reactive({
+    d = allD %>% mutate(
+      dateStr = format(date, format = "%b %d, %Y"),
+      NewConfirmed = CumConfirmed - lag(CumConfirmed, default = 0),
+      NewRecovered = CumRecovered - lag(CumRecovered, default = 0),
+      NewDeaths = CumDeaths - lag(CumDeaths, default = 0)
+    )
+    d[d$NewConfirmed < 0, "NewConfirmed"] = 0
+    d[d$NewRecovered < 0, "NewRecovered"] = 0
+    d[d$NewDeaths < 0, "NewDeaths"] = 0
+    d = d %>%
+      filter(`Country/Region` %in% input$Country)
+    d$date1 = format(as.Date(d$date), format = "%Y-%m-%d")
+    
+    d1 = aggregate(
+      cbind(
+        d$NewConfirmed,
+        d$NewRecovered,
+        d$NewDeaths,
+        d$CumConfirmed,
+        d$CumRecovered,
+        d$CumDeaths
+      ),
+      by = list(
+        `Country/Region` = d$`Country/Region`,
+        date1 = d$date1
+      ),
+      FUN = sum
+    )
+    colnames(d1) = c(
+      'Country',
+      'date1',
+      'NewConfirmed',
+      'NewRecovered',
+      'NewDeaths',
+      'CumConfirmed',
+      'CumRecovered',
+      'CumDeaths'
+    )
+    
+    if ((input$DataSetDATA == 'Death') &
+        (input$DataTypeDATA == 'Daily')) {
+      d1$Y = d1$NewDeaths
+    }
+    if ((input$DataSetDATA == 'Death') &
+        (input$DataTypeDATA == 'Cummulative')) {
+      d1$Y = d1$CumDeaths
+    }
+    if ((input$DataSetDATA == 'Confirmed') &
+        (input$DataTypeDATA == 'Daily')) {
+      d1$Y = d1$NewConfirmed
+    }
+    if ((input$DataSetDATA == 'Confirmed') &
+        (input$DataTypeDATA == 'Cummulative')) {
+      d1$Y = d1$CumConfirmed
+    }
+    if ((input$DataSetDATA == 'Recover') &
+        (input$DataTypeDATA == 'Daily')) {
+      d1$Y = d1$NewRecovered
+    }
+    if ((input$DataSetDATA == 'Recover') &
+        (input$DataTypeDATA == 'Cummulative')) {
+      d1$Y = d1$CumRecovered
+    }
+    d1 = subset(d1, select = c(date1, Country, Y))
+    d1 = d1[order(d1$date1),]
+    d1
+  })
+  
+  
+  output$compplot <- renderPlotly({
+    req(input$Plottype)
+    df <- data1()
+    
+    
+    if (input$Plottype == "Line")
+    {
+      df = df[(df$date1 >= input$selectDate[1]) &
+                (df$date1 <= input$selectDate[2]),]
+      p = df %>%
+        ggplot(aes(
+          x = date1,
+          y = Y,
+          group = Country,
+          color = Country
+        )) +
+        geom_line(size = 1) +
+        labs(x = "date") + theme_bw(base_size = 15) + theme(axis.text.x = element_text(angle = 90))
+    }
+    
+    if (input$Plottype == "Pie")
+    {
+      df = df[(df$date1 == input$selectDate),]
+      cols <- rainbow(nrow(df))
+      df$percent = round(100 * df$Y / sum(df$Y), digits = 1)
+      df$label = paste(df$Country, " (", df$percent, "%)", sep = "")
+      #p=pie(df$Y, labels = df$label, col = cols)
+      p =		plot_ly(df) %>%
+        add_pie(
+          labels = ~ label,
+          values = ~ Y,
+          customdata = ~ label
+        )      
+    }    
+    if (input$Plottype == "Stacked Area")
+    {
+      df = df[(df$date1 >= input$selectDate[1]) &
+                (df$date1 <= input$selectDate[2]),]
+      df$Country <- factor(df$Country)
+      p = df %>%
+        ggplot(aes(
+          x = date1,
+          y = Y,
+          group = Country,
+          color = Country,
+          fill = Country
+        )) +
+        geom_area(alpha = 0.6 ,
+                  size = 1,
+                  colour = "black") +
+        labs(x = "date") + theme_bw(base_size = 15) + theme(axis.text.x = element_text(angle = 90))
+    }
+    if (input$Plottype == "Bar")
+    {
+      df = df[(df$date1 >= input$selectDate[1]) &
+                (df$date1 <= input$selectDate[2]),]
+      df$Country <- factor(df$Country)
+      p = df %>%
+        ggplot(aes(
+          x = date1,
+          y = Y,
+          group = Country,
+          color = Country,
+          fill = Country
+        )) +
+        geom_bar(position = "stack", stat = "identity") +
+        labs(x = "date") + theme_bw(base_size = 15) + theme(axis.text.x = element_text(angle = 90))
+      
+    }
+    p
+  })
+}
+```
+
+# Plot of Graph Tab
+For the plots, we use the bar charts, line charts and pie charts of the R package plotly(First Graph) and ggplot(Second Analyzing). The following code defines a function to be used for both the plots (New and Cumulated cases). The first part of the function defines the basics of the bar chart (style, axes, legend). The second part loops through the selected metrics (e.g. Recovered, …) and adds the bars. A bit tricky is the composition of the column name using the varPrefix (“New” or “Cum”) and metric.
+
+```{r}
+  renderBarPlot = function(varPrefix, legendPrefix, yaxisTitle) {
+    renderPlotly({
+      data = data()
+      plt = data %>%
+        plot_ly() %>%
+        config(displayModeBar = FALSE) %>%
+        layout(
+          barmode = 'group',
+          xaxis = list(
+            title = "",
+            tickangle = -90,
+            type = 'category',
+            ticktext = as.list(data$dateStr),
+            tickvals = as.list(data$date),
+            gridwidth = 1
+          ),
+          yaxis = list(title = yaxisTitle),
+          legend = list(
+            x = 0.05,
+            y = 0.95,
+            font = list(size = 15),
+            bgcolor = 'rgba(240,240,240,0.5)'
+          ),
+          font = f1
+        )
+      for (metric in input$metrics)
+        plt = plt %>%
+        add_trace(
+          x = ~ date,
+          y = data[[paste0(varPrefix, metric)]],
+          type = 'bar',
+          name = paste(legendPrefix, metric, "Cases"),
+          marker = list(
+            color = switch(
+              metric,
+              Deaths = 'rgb(0,0,0)',
+              Recovered = 'rgb(30,200,30)',
+              Confirmed = 'rgb(200,30,30)'
+            ),
+            line = list(color = 'rgb(8,48,107)', width = 1.0)
+          )
+        )
+      plt
+    })
+  }
+```
+
