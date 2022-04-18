@@ -1,0 +1,568 @@
+---
+title: "GLM"
+author: "Rezart Abazi" 
+date: "01/02/2021"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+$~$
+
+$~$
+
+
+
+```{r message=FALSE, include=FALSE}
+setwd("C:/Users/xps/Desktop") #EDIT
+options(scipen = 10)
+
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(tidyr)
+library(DataExplorer) #for the plot_missing function
+library(DescTools)
+library(MASS)
+library(geometry)
+library(corrplot)
+library(pROC)
+```
+
+
+## Abstract
+
+Data for all loans issued through the 2007-2015, including the current loan status (Current, Late, Fully Paid, etc.) and latest payment information. The file containing loan data through the "present" contains complete loan data for all loans issued through the previous completed calendar quarter. Additional features include credit scores, number of finance inquiries, address including zip codes, and state, and collections, among others. This data is going to be used to test the prediction of the model regarding all the significant variables.  
+
+
+
+```{r, include=FALSE, results="hide"}
+#Uploading the dataset
+loan <- read_csv("loan.csv", col_names = TRUE)
+```
+
+$~$
+
+## Data Visualisation
+
+We are dealing with a dataset which contains over 2 million observations, so it is classified as a large dataset and like one has a high probability of having a lot of data in it which is not of our interest. We first need to take a general look and try to find the NA and understand the distribution of all the data among the variable. By using a plot would be easier.
+
+```{r, echo=FALSE, results="markup"}
+#A first impression of the missing data problem their distribution among variables
+#plot_missing(loan)
+```
+ 
+As we can see there are a lot of variables which have from 38.4% up to 99% of missing data. 
+In this plot we see on the y-axis are the variables and the x-axis the number of missing values.  
+The next step will be removing all the variables using a threshold.
+
+$~$
+
+## TARGET VARIABLE 
+```{r echo=FALSE}
+count(loan,loan$loan_status)
+```
+
+Our target variable is now a 8 level variable where only 'CHARGED OFF' and 'FULLY PAID' are significantly consistent with high number of observation. We decided to group some levels together under the same charachteristics about a client who can be defined a Default client and the rest group as a Suitable client.
+
+$~$
+
+
+## Transforming "loan status" into a dichotomous variable 
+```{r echo=TRUE}
+#We merge the levels at call it "Suitable" for all of the clients who tend or are more likely to manage to pay their loan
+
+loan$loan_status[loan$loan_status == "Does not meet the credit policy. Status:Fully Paid" |
+                  loan$loan_status == "Fully Paid" |
+                  loan$loan_status == "In Grace Period" |
+                  loan$loan_status == "Late (16-30 days)"] <- "Suitable"
+
+
+
+#We merge with the same criteria the levels which suits more to a client who is not going to be able to pay his loan.
+loan$loan_status[loan$loan_status == "Charged Off" |
+                   loan$loan_status == "Default" |
+                   loan$loan_status == "Does not meet the credit policy. Status:Charged Off" |
+                   loan$loan_status == "Late (31-120 days)"] <- "Default"
+```
+
+
+
+
+```{r, include=FALSE, results="hide"}
+#Level "Current" describes an active loan  
+#We want to create a classification model for clients who have already concluded their practice
+##Level "Current" describes an active loan and we don't know how this practice will be classified so we decided to remove it.
+loan <- loan[loan$loan_status!="Current",]
+
+#At first I decided to remove every column where number of NA's exeeds 5% of all observations. 
+clean_loan <- loan[, colSums(is.na(loan))<= 0.05*nrow(loan)]
+
+#After droping the columns we drop the rest of NA remained 
+clean_loan <- na.omit(clean_loan)
+
+#In this dataset we have an isignifican number of Joint App which means that more than a person is responsible for the same loan
+#so to remove any doubt in our final classification i decided to filter and keep only the Individual applications
+#Individual  Joint App 
+#1314044      26929 
+clean_loan <- clean_loan[clean_loan$application_type=="Individual",]
+
+
+
+#Im going to apply the same filter for "disbursement_method" variable where direct pay is only less than 5% of all the observations
+#      Cash       DirectPay 
+#     1307572        6472 
+
+clean_loan <- clean_loan[clean_loan$disbursement_method=="Cash",]
+
+clean_loan <-  clean_loan[,-which(names(clean_loan) %in% c(
+      "sub_grade",             # LC assigned loan subgrade
+      "issue_d",               # Column of date format
+      "pymnt_plan",            # column of constat values "n" in almost 99% of it       
+      "title",                 # Copy of "purpose" column so was unnecessary to keep it
+      "delinq_2yrs",           # Column made in the 80% of values zero
+      "pub_rec",               # # Column made in the 85% of values zero
+      "zip_code",              # Column not of our interest in the the analysis
+      "addr_state",            # Column of adreses, not valuable for our analysis
+      "earliest_cr_line",      # The date the borrower's earliest reported credit line was opened. Is another date format column
+      "initial_list_status",   # The initial listing status of the loan. Possible values are - W, F
+      "out_prncp_inv",         # Column made in the 96% of values zero and no description of it
+      "out_prncp",             # Column made in the 97% of values zero and no description of it
+      "total_rec_late_fee",    # Late fees received to date. Column made in 90% of it of values zero
+      "delinq_amnt",           # Column made in the 95% of values zero
+      "pub_rec_bankruptcies",  # Column made in the 90% of values zero
+      "recoveries",            # Post charge off gross recovery. Column made in 87% of it of values zero
+      "collection_recovery_fee",# Column made in the 88% of values zero and no description of it
+      "last_pymnt_d",         # Column of date format. No description of it.
+      "last_credit_pull_d",    # Column of date format. No description of it.
+      "collections_12_mths_ex_med",# Number of collections in 12 months excluding medical collections. Column made in 98% of it of values zero
+      "policy_code",           # Column made in 100% of it of values 1 and no description of it
+      "acc_now_delinq",        # The number of accounts on which the borrower is now delinquent. Column made in 98% of it of values zero
+      "chargeoff_within_12_mths",# Column made in the 90% of values zero and no description of it
+      "delinq_amt",            # The past-due amount owed for the accounts on which the borrower is now delinquent. Column made in 98% of it of valuezero
+      "tax_liens",             # Number of tax liens. Column made in 95% of it of values zero
+      "hardship_flag",         # Column made in the 99.9% of values N and no description of it
+      "debt_settlement_flag",  # Column made in the 99.9% of values N and no description of it  
+      "application_type",      
+      "disbursement_method"
+      )
+  )]
+```
+
+$~$
+
+$~$
+
+It is time to understand better the data with some descriptive statistics We did some combination between the variables which are more likely to be in positive or negative correlation to better understand the whole picture.
+For a better understanding let us start from the most obvious question:
+Which are the main reasons a person requires a loan? 
+Thanks to “ggplot” package in R we can show you a graph will the most used loan purposes
+
+$~$
+
+Debt consolidation (debt consolidation refers to the act of taking out a new loan to pay off other liabilities and consumer debts, generally unsecured ones.) is in first place, credit card second, moving and home improvements. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#Relation between loan amount and purpose
+ggplot(data=loan, aes(x=loan_amnt,col=purpose))+ geom_freqpoly(binwidth = 5000)
+
+```
+
+$~$
+
+$~$
+
+$~$
+
+In this plot we have the representation of loan amount according to employer length.  In our dataset the clients where from 1 year to 10 year + but for effect of space we choose only from the 7th to the 9th one. Interesting thing to notice about is the loan amount for the home ownership with label “ANY” gets smaller with increasing of years. Who is living in “RENT” is constant and “OTHER” in another group which increases
+
+
+```{r echo=FALSE, warning=FALSE,message=FALSE}
+#loan amount and employer length
+ggplot(data = loan, aes(loan_amnt, emp_length, fill = home_ownership)) +
+  geom_boxplot(outlier.color = "blue") + labs(title = "Box plot of loan amount according to employer length") +
+  coord_cartesian(xlim = c(2500, 40000), ylim = c(9,11))
+```
+
+$~$
+
+$~$
+
+In order not to incur the over-fitting of the model, the dataset after all the data cleaning and removing the variables with missing values and the correlated variables consisted of 1.2 million observation and 22 variables. This dataset was divided into two subsets, a train consisting of 852367 observations and a test consisting of 365300 observations. The two sets were created by generating pseudo random numbers and extracting these lines from the initial set, thus forming the test set, and assigning the remaining statistical units to the train set.
+
+$~$
+
+## TRAIN AND TEST 
+```{r,echo=TRUE}
+set.seed(987654321)
+
+idx = sample(nrow(clean_loan), round(0.70*nrow(clean_loan)))
+
+training_loan <- clean_loan[idx,]
+test_loan <- clean_loan[-idx,]
+```
+
+
+```{r include=FALSE, results="hide"}
+str(training_loan)
+
+## Data Trasformation is the most important step for this analysis if we want to have good results
+
+
+training_loan$loan_status[training_loan$loan_status == "Suitable"] <- 1
+training_loan$loan_status[training_loan$loan_status != 1 ] <- 0
+str(training_loan$loan_status)
+training_loan$loan_status <- as.numeric(training_loan$loan_status)
+
+
+# Loan Term variable has only 2 levels 36 and 60 so i choosed to transfrom in a dummy variable 
+#where the 36 months term assumes value 1 and 60 zero.
+training_loan$term <- gsub("months", "", training_loan$term)
+training_loan$term <- as.integer(training_loan$term)
+training_loan$term[training_loan$term == 36 ] <- 1
+training_loan$term[training_loan$term != 1] <- 0
+training_loan$term <- as.numeric(training_loan$term)
+str(training_loan$term)
+
+
+#Assigning a number to each grade will make it easier to transform the variable into a numeric one
+#and will be possible to check to correlation between variables
+str(training_loan$grade)
+training_loan$grade[training_loan$grade == "A"] <- 1
+training_loan$grade[training_loan$grade == "B"] <- 2
+training_loan$grade[training_loan$grade == "C"] <- 3
+training_loan$grade[training_loan$grade == "D"] <- 4
+training_loan$grade[training_loan$grade == "E"] <- 5
+training_loan$grade[training_loan$grade == "F"] <- 6
+training_loan$grade[training_loan$grade == "G"] <- 7
+training_loan$grade <- as.integer(training_loan$grade)
+
+
+#As we can see here the 2 consistent levels of this variable are MORTAGE and RENT so
+#this is another case of merging levels together and transforming this into a dummy varibale where by logic 
+#i would say there is an connection between OWN and MORTAGE so i will assign value 1 to this and zero to the rest
+
+#ANY   MORTGAGE    NONE    OTHER      OWN      RENT 
+#199    450759      34      123      99048    369668
+
+training_loan$home_ownership[training_loan$home_ownership=="OWN" | training_loan$home_ownership=="MORTGAGE"  ] <- 1       
+training_loan$home_ownership[training_loan$home_ownership!=1] <- 0
+training_loan$home_ownership <- as.numeric(training_loan$home_ownership)
+str(training_loan$home_ownership)
+
+
+
+#This variable has almost equaly distributed number of observations for each level 
+#so i decided to keep all the three levels and not apply a merge
+training_loan$verification_status <- factor(training_loan$verification_status,
+                           levels = c("Verified",
+                                      "Source Verified",
+                                      "Not Verified"),
+                           ordered = TRUE) 
+training_loan$verification_status <- as.numeric(training_loan$verification_status)
+
+
+#I used the same logic like in the previous variable by assigning a level to each 
+#but with the difference that here the levels are not ordered
+training_loan$purpose <- factor(training_loan$purpose,
+                                levels = c("car",
+                                           "credit_card",
+                                           "debt_consolidation",
+                                           "educational",
+                                           "home_improvement",
+                                           "house",
+                                           "major_purchase",
+                                           "medical",
+                                           "moving",
+                                           "other",
+                                           "renewable_energy",
+                                           "small_business",
+                                           "vacation",
+                                           "wedding"),
+                                ordered = FALSE)
+training_loan$purpose <- as.numeric(training_loan$purpose)
+
+
+
+#First droping the chararter part of the variable and transform it to an integer
+unique(training_loan$emp_length)
+training_loan$emp_length <- gsub("<", "", training_loan$emp_length)
+training_loan$emp_length <- gsub("years", "", training_loan$emp_length)
+training_loan$emp_length <- gsub("year", "", training_loan$emp_length)
+training_loan$emp_length <- gsub("n/a", "", training_loan$emp_length)
+training_loan$emp_length <- gsub(" ", "", training_loan$emp_length)
+training_loan$emp_length <- gsub("\\+", "", training_loan$emp_length)
+training_loan$emp_length <- ifelse(training_loan$emp_length =="", 10, training_loan$emp_length)
+training_loan$emp_length <- as.integer(training_loan$emp_length)
+unique(training_loan$emp_length)
+```
+
+$~$
+
+This are all the numeric variables which will be evaluated by the model.
+```{r echo=FALSE, results="markup"}
+#For the correlation we need only the numeric variables so we select them with supply.
+loan_numeric_var <- sapply(training_loan, is.numeric) %>% which() %>% names()
+loan_numeric_var
+```
+
+
+```{r include=FALSE, results='hide'}
+#Correlation of the variables
+loans_corr <-
+  cor(training_loan[, loan_numeric_var],
+      use = "pairwise.complete.obs")
+
+loans_corr
+```
+
+```{r include=FALSE, results='hide'}
+#ploting the correlation to make it easier to understand the correlation between variables
+corrplot(loans_corr, 
+         method = "number", type = "lower", order = "hclust")
+```
+
+
+```{r include=FALSE, results='hide'}
+findCorrelation(loans_corr, names = TRUE, cutoff = 0.75)
+# these are potential candidates
+# to be excluded from the model
+
+
+training_loan <-
+  training_loan[, -which(names(training_loan) %in% c("bc_util","int_rate", "revol_util","open_acc","total_pymnt_inv",
+                                                      "total_bc_limit","total_rec_prncp","total_pymnt",
+                                                      "loan_amnt","funded_amnt","funded_amnt_inv","grade"))]
+
+
+#Numeric variables after removing the correlated ones 
+loan_numeric_var_noVIF <- sapply(training_loan, is.numeric) %>% which() %>% names()
+loan_numeric_var_noVIF
+
+#Correlation
+loans_corr_noVIF <-
+  cor(training_loan[, loan_numeric_var_noVIF],
+      use = "pairwise.complete.obs")
+```
+
+$~$
+
+$~$
+
+The correlation plot is shown after we removed the the variables which were correlated more 75% to avoid Multicollinearity. It happens when one predictor variable in a multiple regression model can be linearly predicted from the others with a high degree of accuracy. This can lead to skewed or misleading results.
+
+$~$
+
+```{r echo=FALSE, results='markup'}
+#Correlation plot
+corrplot(loans_corr_noVIF, 
+         method = "number", type = "lower", order = "hclust")
+```
+
+
+$~$
+
+## MODEL ESTIMATION
+
+```{r include=FALSE, results='hide'}
+#This is the firt model made with loan status like our target variable
+#In the summary we can see that a couple of variables are insignificant so they have been removed
+model_1 <- glm(loan_status ~., data = training_loan, family = binomial)
+summary(model_1)
+
+
+stepAIC(model_1, direction = "forward", trace = TRUE )
+```
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+#this is my final model with all the variables significant after we removed the not significant
+train_model <- glm(formula = loan_status ~ term + installment + 
+                     home_ownership + annual_inc + verification_status + purpose + 
+                     dti + inq_last_6mths + revol_bal + total_acc + total_rec_int + 
+                     last_pymnt_amnt + acc_open_past_24mths + bc_open_to_buy + 
+                     mort_acc + mths_since_recent_bc + num_bc_sats + num_sats + 
+                     percent_bc_gt_75 + total_bal_ex_mort, family = binomial, 
+                   data = training_loan)
+
+#tab_model(train_model)
+
+```
+
+
+
+
+```{r include=FALSE, results="hide"}
+#WARNING!
+#When i apply the predicition i get this error : #Error: variables 'term', 'grade', 'emp_length', 'home_ownership', 'purpose' 
+#were specified with different types from the fit
+#Probably due to the fact that variables type in train and test are of different type after the manipulation
+#after online serach only palusible answer i found about my error is to to apply the same transformation to the test sample
+
+test_loan$loan_status[test_loan$loan_status == "Suitable"] <- 1
+test_loan$loan_status[test_loan$loan_status != 1 ] <- 0
+str(test_loan$loan_status)
+test_loan$loan_status <- as.numeric(test_loan$loan_status)
+
+
+# Loan Term variable has only 2 levels 36 and 60 so i choosed to transfrom in a dummy variable 
+#where the 36 months term assumes value 1 and 60 zero.
+test_loan$term <- gsub("months", "", test_loan$term)
+test_loan$term <- as.integer(test_loan$term)
+test_loan$term[test_loan$term == 36 ] <- 1
+test_loan$term[test_loan$term != 1] <- 0
+test_loan$term <- as.numeric(test_loan$term)
+str(test_loan$term)
+
+
+
+
+#Assigning a number to each grade will make it easier to transform the variable into a numeric one
+#and will be possible to check to correlation between variables
+str(test_loan$grade)
+test_loan$grade[test_loan$grade == "A"] <- 1
+test_loan$grade[test_loan$grade == "B"] <- 2
+test_loan$grade[test_loan$grade == "C"] <- 3
+test_loan$grade[test_loan$grade == "D"] <- 4
+test_loan$grade[test_loan$grade == "E"] <- 5
+test_loan$grade[test_loan$grade == "F"] <- 6
+test_loan$grade[test_loan$grade == "G"] <- 7
+test_loan$grade <- as.integer(test_loan$grade)
+
+
+test_loan$verification_status <- factor(test_loan$verification_status,
+                                            levels = c("Verified",
+                                                       "Source Verified",
+                                                       "Not Verified"),
+                                            ordered = TRUE) 
+test_loan$verification_status <- as.numeric(test_loan$verification_status)
+
+
+#I used the same logic like in the previous variable by assigning a level to each 
+#but with the difference that here the levels are not ordered
+test_loan$purpose <- factor(test_loan$purpose,
+                                levels = c("car",
+                                           "credit_card",
+                                           "debt_consolidation",
+                                           "educational",
+                                           "home_improvement",
+                                           "house",
+                                           "major_purchase",
+                                           "medical",
+                                           "moving",
+                                           "other",
+                                           "renewable_energy",
+                                           "small_business",
+                                           "vacation",
+                                           "wedding"),
+                                ordered = FALSE)
+test_loan$purpose <- as.numeric(test_loan$purpose)
+
+
+
+#First droping the chararter part of the variable and transform it to an integer
+unique(test_loan$emp_length)
+test_loan$emp_length <- gsub("<", "", test_loan$emp_length)
+test_loan$emp_length <- gsub("years", "", test_loan$emp_length)
+test_loan$emp_length <- gsub("year", "", test_loan$emp_length)
+test_loan$emp_length <- gsub("n/a", "", test_loan$emp_length)
+test_loan$emp_length <- gsub(" ", "", test_loan$emp_length)
+test_loan$emp_length <- gsub("\\+", "", test_loan$emp_length)
+test_loan$emp_length <- ifelse(test_loan$emp_length =="", 10, test_loan$emp_length)
+test_loan$emp_length <- as.integer(test_loan$emp_length)
+unique(test_loan$emp_length)
+
+
+
+
+test_loan$home_ownership[test_loan$home_ownership=="OWN" | test_loan$home_ownership=="MORTGAGE"  ] <- 1       
+test_loan$home_ownership[test_loan$home_ownership!=1] <- 0
+test_loan$home_ownership <- as.numeric(test_loan$home_ownership)
+str(test_loan$home_ownership)
+
+
+
+
+
+test_loan <-
+  test_loan[, -which(names(test_loan) %in% c("bc_util","int_rate", "revol_util","open_acc","total_pymnt_inv",
+                                                     "total_bc_limit","total_rec_prncp","total_pymnt",
+                                                     "loan_amnt","funded_amnt","funded_amnt_inv","grade"))]
+
+```
+
+
+                                       
+
+```{r include=FALSE, results="hide"}
+#Prediction model is made to predict result of training model on test dataset 
+# which has 30% of the amount of data.
+# the pupose is to understand the fitting of the data 
+pred.modl <- predict.glm(train_model, newdata = test_loan, type = "response")
+
+
+#create a column in test set with the result of prediction
+test_loan$alpha <- pred.modl
+
+#used a threshold of 50% for my prediction which means that will see how the client will be classified with a prob of 50%
+test_loan$alpha <- ifelse(test_loan$alpha >= 0.5, 1, 0 )
+
+#assing this data to test dataset
+test_loan$alpha <- as.factor(test_loan$alpha)
+
+test_loan$loan_status <- as.factor(test_loan$loan_status)
+```
+
+$~$
+
+$~$
+
+## Prediction Output
+
+```{r echo=FALSE, results="markup"}
+#Cheking the accuracy of prediction  #Accuracy : 87.1%
+#means that we classified with 72.4% accuracy the client (DEFAULT , SUITABLE)
+confusionMatrix(test_loan$alpha, test_loan$loan_status) 
+```
+
+The classification model would be optimal if it maximizes both the sensitivity than specificity. This however is not possible: in fact, by raising the value of the specificity, the value of false positives decreases, but false negatives increase, which leads to one decreased sensitivity. It can therefore be observed that there is a trade-off between the two indices. The relationship between the above parameters can be represented through a line obtained reporting, in a system of Cartesian axes and for each possible cut-off value, the proportion of true positive in ordinate and the proportion of false positives in abscissa. he union of the points obtained
+reporting in the Cartesian plane each pair of Se and 1-Sp generates a broken, the ROC curve.
+
+$~$
+
+# ROC CURVE
+
+```{r  echo=FALSE, warning=FALSE, message=FALSE}
+plot.roc(
+  test_loan$loan_status ,
+  pred.modl ,
+  main = "ROC" ,
+  percent = TRUE ,
+  print.auc = TRUE,
+  ci = TRUE ,
+  of = "thresholds" ,
+  thresholds = "best" ,
+  print.thres = "best" ,
+  col = 'blue'
+)
+```
+
+Sensitivity =  TP/(TP+FN) ; expresses the proportion of True Positives compared to the total number of actual positives. Sensitivity is adversely affected by the share of false negatives
+
+
+Specifity =  TN/(FP+TN) ; expresses the proportion of True Negatives compared to the total number of actual negatives. There specificity is influenced by the share of false positives
+
+$~$
+
+$~$
+## Conclusions
+In our Glm (generalized linear model). This are satisfying results for our research. 
+Our depended variable was unbalanced so to eleminate the risk of a error in our prediction we applied the CBS (choice-based sampling) to create a subset with balanced values in the dependet variable and the result of the predicted model was 86.1%. 
+
+
